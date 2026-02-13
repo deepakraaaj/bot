@@ -3,6 +3,7 @@ from langgraph.graph import END, StateGraph
 from app.assistant.state import AgentState
 from app.assistant.nodes.chat_node import ChatNode
 from app.assistant.nodes.intent_node import IntentNode
+from app.assistant.nodes.mutation_understanding_node import MutationUnderstandingNode
 from app.assistant.nodes.response_node import ResponseNode
 from app.assistant.nodes.router_node import RouterNode
 from app.assistant.nodes.sql_builder_node import SQLBuilderNode
@@ -14,6 +15,7 @@ def create_graph():
     router = RouterNode()
     chat = ChatNode()
     intent = IntentNode()
+    mutation_understand = MutationUnderstandingNode()
     sql_build = SQLBuilderNode()
     sql_validate = SQLValidateNode()
     sql_execute = SQLExecuteNode()
@@ -23,6 +25,7 @@ def create_graph():
     graph.add_node("route", router.run)
     graph.add_node("chat", chat.run)
     graph.add_node("intent", intent.run)
+    graph.add_node("mutation_understand", mutation_understand.run)
     graph.add_node("sql_build", sql_build.run)
     graph.add_node("sql_validate", sql_validate.run)
     graph.add_node("sql_execute", sql_execute.run)
@@ -36,7 +39,8 @@ def create_graph():
         {"chat": "chat", "intent": "intent"},
     )
 
-    graph.add_edge("intent", "sql_build")
+    graph.add_edge("intent", "mutation_understand")
+    graph.add_edge("mutation_understand", "sql_build")
     graph.add_conditional_edges(
         "sql_build",
         lambda state: END if state.get("sql_query") == "SKIP" else "sql_validate",
