@@ -26,7 +26,7 @@ def test_active_mutation_collects_next_field_one_by_one():
     assert "occurrence" in result["message"].lower()
 
 
-def test_active_mutation_completion_injects_mutation_context():
+def test_active_mutation_completion_returns_confirmation_preview():
     svc = ChatService()
     req = ChatRequest(session_id="s-m2", message="2026-02-14", metadata={})
     state = {
@@ -38,6 +38,31 @@ def test_active_mutation_completion_injects_mutation_context():
         "collected_fields": {},
         "pending_field": "date",
         "field_descriptions": {"date": "Schedule date"},
+    }
+
+    result = asyncio.run(svc._handle_active_mutation(req, state))
+
+    assert result is not None
+    assert result["workflow"]["mode"] == "confirmation"
+    assert "review before insert" in result["message"].lower()
+    assert req.metadata.get("mutation_context") is None
+
+
+def test_confirmation_yes_injects_mutation_context_for_execution():
+    svc = ChatService()
+    req = ChatRequest(session_id="s-m2b", message="yes", metadata={})
+    state = {
+        "workflow_id": "mutation_menu",
+        "state": "collect_insert_scheduler_details",
+        "operation": "insert",
+        "table": "scheduler_details",
+        "required_fields": ["date", "occurrence"],
+        "collected_fields": {"date": "2026-02-14", "occurrence": "2"},
+        "pending_field": "",
+        "field_descriptions": {},
+        "awaiting": "confirmation",
+        "page": 0,
+        "page_size": 5,
     }
 
     result = asyncio.run(svc._handle_active_mutation(req, state))
@@ -75,3 +100,27 @@ def test_extracts_db_error_columns_for_recovery():
     svc = ChatService()
     assert svc._extract_invalid_column("Incorrect integer value: 'daily' for column 'occurrence' at row 1") == "occurrence"
     assert svc._extract_missing_required_column("Field 'scheduled_ref_no' doesn't have a default value") == "scheduled_ref_no"
+
+
+def test_field_selection_number_prompts_for_value_in_next_step():
+    svc = ChatService()
+    req = ChatRequest(session_id="s-m4", message="1", metadata={})
+    state = {
+        "workflow_id": "mutation_menu",
+        "state": "collect_insert_scheduler_details",
+        "operation": "insert",
+        "table": "scheduler_details",
+        "required_fields": ["occurrence", "date"],
+        "collected_fields": {},
+        "pending_field": "occurrence",
+        "field_descriptions": {"date": "Schedule date", "occurrence": "Repeat pattern"},
+        "awaiting": "field_selection",
+        "page": 0,
+        "page_size": 5,
+    }
+
+    result = asyncio.run(svc._handle_active_mutation(req, state))
+
+    assert result is not None
+    assert result["workflow"]["mode"] == "field_value"
+    assert result["workflow"]["next_field"] == "occurrence"

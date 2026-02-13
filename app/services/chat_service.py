@@ -2,7 +2,7 @@ import json
 import logging
 import re
 import uuid
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import Any, AsyncGenerator, Dict, List, Optional, Tuple
 
 from langchain_core.messages import AIMessage, HumanMessage
 
@@ -51,18 +51,220 @@ class ChatService:
         return ""
 
     @staticmethod
-    def _format_field_prompt(state: Dict[str, Any]) -> str:
-        table = str(state.get("table", "record"))
-        pending = str(state.get("pending_field", "")).strip()
-        if not pending:
-            return f"All required fields collected for {table}."
+    def _remaining_fields(required_fields: List[str], collected_fields: Dict[str, Any]) -> List[str]:
+        return [f for f in required_fields if not str(collected_fields.get(f, "")).strip()]
 
+    @staticmethod
+    def _input_kind(field_name: str) -> str:
+        name = str(field_name).lower()
+        if "date" in name:
+            return "date"
+        if re.search(r"(^id$|_id$|count|qty|quantity|amount|price|occurrence|number|ref_no)", name):
+            return "numeric"
+        if name in {"is_active", "active", "enabled"}:
+            return "boolean"
+        return "text"
+
+    @staticmethod
+    def _suggested_options(field_name: str) -> List[Dict[str, str]]:
+        name = str(field_name).lower()
+        if name == "occurrence":
+            return [
+                {"label": "Daily", "value": "1"},
+                {"label": "Weekly", "value": "2"},
+                {"label": "Monthly", "value": "3"},
+                {"label": "Quarterly", "value": "4"},
+            ]
+        if name in {"is_active", "active", "enabled"}:
+            return [
+                {"label": "Yes", "value": "1"},
+                {"label": "No", "value": "0"},
+            ]
+        return []
+
+    @staticmethod
+    def _build_field_menu(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        table = str(state.get("table", "record"))
+        required_fields = [str(x) for x in state.get("required_fields", [])]
+        collected_fields = dict(state.get("collected_fields") or {})
         descriptions = state.get("field_descriptions") or {}
-        desc = str(descriptions.get(pending, "")).strip()
-        details = f" ({desc})" if desc else ""
-        return (
-            f"Let's continue creating `{table}`. Please provide `{pending}`{details}. "
-            "You can reply with just the value or `field=value`."
+        remaining = ChatService._remaining_fields(required_fields, collected_fields)
+
+        page_size = int(state.get("page_size", 5) or 5)
+        page = max(0, int(state.get("page", 0) or 0))
+        total_pages = max(1, (len(remaining) + page_size - 1) // page_size)
+        page = min(page, total_pages - 1)
+
+        start = page * page_size
+        end = start + page_size
+        page_fields = remaining[start:end]
+
+        lines = [f"Select a field to fill for `{table}` ({len(remaining)} remaining):"]
+        for idx, field in enumerate(page_fields, start=1):
+            desc = str(descriptions.get(field, "")).strip()
+            suffix = f" - {desc}" if desc else ""
+            lines.append(f"{idx}. {field}{suffix}")
+
+        controls = []
+        if total_pages > 1:
+            controls.append(f"Page {page + 1}/{total_pages}")
+            controls.append("type `next` or `prev` for more options")
+        controls.append("type option number to select")
+
+        pending = str(state.get("pending_field", "")).strip()
+        if pending:
+            controls.append(f"or directly enter value for recommended `{pending}`")
+
+        message = "\n".join(lines + ["", "; ".join(controls)])
+
+        payload = {
+            "workflow_id": "mutation_menu",
+            "state": str(state.get("state", "collect_mutation")),
+            "completed": False,
+            "next_field": pending,
+            "mode": "field_selection",
+            "pagination": {
+                "page": page + 1,
+                "page_size": page_size,
+                "total_pages": total_pages,
+            },
+            "collected_data": {
+                "operation": state.get("operation", "insert"),
+                "table": table,
+                "required_fields": required_fields,
+                "collected_fields": collected_fields,
+            },
+            "ui": {
+                "type": "menu",
+                "title": f"Choose next field for {table}",
+                "options": [
+                    {
+                        "index": idx,
+                        "id": field,
+                        "label": field,
+                        "description": str(descriptions.get(field, "")),
+                    }
+                    for idx, field in enumerate(page_fields, start=1)
+                ],
+            },
+        }
+        return message, payload
+
+    @staticmethod
+    def _build_value_prompt(state: Dict[str, Any], field_name: str) -> Tuple[str, Dict[str, Any]]:
+        table = str(state.get("table", "record"))
+        descriptions = state.get("field_descriptions") or {}
+        desc = str(descriptions.get(field_name, "")).strip()
+        detail = f" ({desc})" if desc else ""
+
+        options = ChatService._suggested_options(field_name)
+        kind = ChatService._input_kind(field_name)
+
+        lines = [f"Enter value for `{field_name}`{detail} in `{table}`."]
+        if options:
+            lines.append("Options:")
+            for idx, opt in enumerate(options, start=1):
+                lines.append(f"{idx}. {opt['label']} ({opt['value']})")
+            lines.append("Type option number or enter custom value.")
+        elif kind == "date":
+            lines.append("Please enter date in `YYYY-MM-DD` format.")
+        elif kind == "numeric":
+            lines.append("Please enter a numeric value.")
+        elif kind == "boolean":
+            lines.append("Please enter `1` (true) or `0` (false).")
+        else:
+            lines.append("Please enter a text value.")
+
+        payload = {
+            "workflow_id": "mutation_menu",
+            "state": str(state.get("state", "collect_mutation")),
+            "completed": False,
+            "next_field": field_name,
+            "mode": "field_value",
+            "collected_data": {
+                "operation": state.get("operation", "insert"),
+                "table": table,
+                "required_fields": [str(x) for x in state.get("required_fields", [])],
+                "collected_fields": dict(state.get("collected_fields") or {}),
+            },
+            "ui": {
+                "type": "input",
+                "field": {
+                    "id": field_name,
+                    "label": field_name,
+                    "kind": kind,
+                    "description": desc,
+                    "options": options,
+                },
+            },
+        }
+        return "\n".join(lines), payload
+
+    @staticmethod
+    def _build_confirmation_prompt(state: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        operation = str(state.get("operation", "insert")).lower()
+        table = str(state.get("table", "record"))
+        collected_fields = dict(state.get("collected_fields") or {})
+
+        lines = [f"Please review before {operation} on `{table}`:"]
+        for key in sorted(collected_fields.keys()):
+            lines.append(f"- {key}: {collected_fields[key]}")
+        lines.append("")
+        lines.append("Reply `yes` to confirm and execute, or `no` to edit fields.")
+
+        payload = {
+            "workflow_id": "mutation_menu",
+            "state": str(state.get("state", "confirm_mutation")),
+            "completed": False,
+            "next_field": "",
+            "mode": "confirmation",
+            "collected_data": {
+                "operation": operation,
+                "table": table,
+                "required_fields": [str(x) for x in state.get("required_fields", [])],
+                "collected_fields": collected_fields,
+            },
+            "ui": {
+                "type": "confirmation",
+                "title": f"Confirm {operation} on {table}",
+                "actions": ["yes", "no"],
+            },
+        }
+        return "\n".join(lines), payload
+
+    @staticmethod
+    def _resolve_field_selection(user_text: str, state: Dict[str, Any]) -> Optional[str]:
+        required_fields = [str(x) for x in state.get("required_fields", [])]
+        collected_fields = dict(state.get("collected_fields") or {})
+        remaining = ChatService._remaining_fields(required_fields, collected_fields)
+
+        text = str(user_text or "").strip().lower()
+        if not text:
+            return None
+
+        if text in {f.lower() for f in remaining}:
+            for field in remaining:
+                if field.lower() == text:
+                    return field
+            return None
+
+        if text.isdigit():
+            page_size = int(state.get("page_size", 5) or 5)
+            page = max(0, int(state.get("page", 0) or 0))
+            start = page * page_size
+            end = start + page_size
+            page_fields = remaining[start:end]
+            index = int(text)
+            if 1 <= index <= len(page_fields):
+                return page_fields[index - 1]
+        return None
+
+    @staticmethod
+    def _is_command_like_input(text: str) -> bool:
+        lowered = (text or "").lower()
+        return any(
+            token in lowered
+            for token in ["create ", "insert ", "add ", "update ", "show ", "list ", "count ", "get ", "find "]
         )
 
     @staticmethod
@@ -73,23 +275,15 @@ class ChatService:
 
         text = (message or "").strip()
         if text and pending_field:
-            lowered = text.lower()
-            if any(
-                token in lowered
-                for token in [
-                    "create ",
-                    "insert ",
-                    "add ",
-                    "update ",
-                    "show ",
-                    "list ",
-                    "count ",
-                    "get ",
-                    "find ",
-                ]
-            ):
+            if ChatService._is_command_like_input(text):
                 return {}
-        if pending_field and text:
+
+            options = ChatService._suggested_options(pending_field)
+            if options and text.isdigit():
+                index = int(text)
+                if 1 <= index <= len(options):
+                    return {pending_field: str(options[index - 1]["value"])}
+
             return {pending_field: text}
         return {}
 
@@ -143,66 +337,130 @@ class ChatService:
         required_fields = [str(x) for x in mutation_state.get("required_fields", [])]
         collected_fields = dict(mutation_state.get("collected_fields") or {})
         pending_field = str(mutation_state.get("pending_field", "")).strip()
+        awaiting = str(mutation_state.get("awaiting", "field_selection")).strip() or "field_selection"
+        page = max(0, int(mutation_state.get("page", 0) or 0))
+        page_size = max(1, int(mutation_state.get("page_size", 5) or 5))
 
-        updates = self._parse_user_field_updates(user_text, pending_field)
-        accepted_updates = 0
-        for key, value in updates.items():
-            if key in required_fields and str(value).strip():
-                collected_fields[key] = str(value).strip()
-                accepted_updates += 1
+        remaining = self._remaining_fields(required_fields, collected_fields)
+        if not remaining:
+            await self._clear_mutation_state(request.session_id)
+            if request.metadata is None:
+                request.metadata = {}
+            request.metadata["mutation_context"] = {
+                "operation": mutation_state.get("operation", "insert"),
+                "table": mutation_state.get("table", ""),
+                "fields": collected_fields,
+            }
+            return None
 
-        if accepted_updates == 0:
-            prompt = self._format_field_prompt(mutation_state)
-            return self._build_final_response(
-                request.session_id,
-                prompt,
-                workflow_payload={
-                    "workflow_id": "mutation_menu",
-                    "state": mutation_state.get("state", "collect_mutation"),
-                    "completed": False,
-                    "next_field": mutation_state.get("pending_field", ""),
-                    "collected_data": {
-                        "operation": mutation_state.get("operation", "insert"),
-                        "table": mutation_state.get("table", ""),
-                        "required_fields": required_fields,
-                        "collected_fields": collected_fields,
-                    },
-                },
-            )
+        if not pending_field:
+            pending_field = remaining[0]
 
-        pending_field = self._next_missing_field(required_fields, collected_fields)
-        mutation_state["collected_fields"] = collected_fields
-        mutation_state["pending_field"] = pending_field
+        if awaiting == "field_selection":
+            if lower_text in {"next", "more"}:
+                total_pages = max(1, (len(remaining) + page_size - 1) // page_size)
+                mutation_state["page"] = min(page + 1, total_pages - 1)
+                mutation_state["page_size"] = page_size
+                mutation_state["pending_field"] = pending_field
+                mutation_state["awaiting"] = "field_selection"
+                await self._save_mutation_state(request.session_id, mutation_state)
+                message, payload = self._build_field_menu(mutation_state)
+                return self._build_final_response(request.session_id, message, workflow_payload=payload)
 
-        if pending_field:
+            if lower_text in {"prev", "back"}:
+                mutation_state["page"] = max(0, page - 1)
+                mutation_state["page_size"] = page_size
+                mutation_state["pending_field"] = pending_field
+                mutation_state["awaiting"] = "field_selection"
+                await self._save_mutation_state(request.session_id, mutation_state)
+                message, payload = self._build_field_menu(mutation_state)
+                return self._build_final_response(request.session_id, message, workflow_payload=payload)
+
+            selected_field = self._resolve_field_selection(user_text, mutation_state)
+            if selected_field:
+                mutation_state["pending_field"] = selected_field
+                mutation_state["awaiting"] = "field_value"
+                mutation_state["page"] = page
+                mutation_state["page_size"] = page_size
+                mutation_state["collected_fields"] = collected_fields
+                await self._save_mutation_state(request.session_id, mutation_state)
+                message, payload = self._build_value_prompt(mutation_state, selected_field)
+                return self._build_final_response(request.session_id, message, workflow_payload=payload)
+            elif user_text and not self._is_command_like_input(user_text):
+                awaiting = "field_value"
+            else:
+                mutation_state["page"] = page
+                mutation_state["page_size"] = page_size
+                mutation_state["pending_field"] = pending_field
+                mutation_state["awaiting"] = "field_selection"
+                await self._save_mutation_state(request.session_id, mutation_state)
+                message, payload = self._build_field_menu(mutation_state)
+                return self._build_final_response(request.session_id, message, workflow_payload=payload)
+
+        if awaiting == "field_value":
+            updates = self._parse_user_field_updates(user_text, pending_field)
+            accepted_updates = 0
+            for key, value in updates.items():
+                if key in required_fields and str(value).strip():
+                    collected_fields[key] = str(value).strip()
+                    accepted_updates += 1
+
+            if accepted_updates == 0:
+                mutation_state["pending_field"] = pending_field
+                mutation_state["awaiting"] = "field_value"
+                mutation_state["page"] = page
+                mutation_state["page_size"] = page_size
+                mutation_state["collected_fields"] = collected_fields
+                await self._save_mutation_state(request.session_id, mutation_state)
+                message, payload = self._build_value_prompt(mutation_state, pending_field)
+                return self._build_final_response(request.session_id, message, workflow_payload=payload)
+
+            next_field = self._next_missing_field(required_fields, collected_fields)
+            mutation_state["collected_fields"] = collected_fields
+            mutation_state["pending_field"] = next_field
+            mutation_state["page"] = 0
+            mutation_state["page_size"] = page_size
+
+            if next_field:
+                mutation_state["awaiting"] = "field_selection"
+                await self._save_mutation_state(request.session_id, mutation_state)
+                message, payload = self._build_field_menu(mutation_state)
+                return self._build_final_response(request.session_id, message, workflow_payload=payload)
+
+            mutation_state["awaiting"] = "confirmation"
+            mutation_state["pending_field"] = ""
             await self._save_mutation_state(request.session_id, mutation_state)
-            return self._build_final_response(
-                request.session_id,
-                self._format_field_prompt(mutation_state),
-                workflow_payload={
-                    "workflow_id": "mutation_menu",
-                    "state": mutation_state.get("state", "collect_mutation"),
-                    "completed": False,
-                    "next_field": pending_field,
-                    "collected_data": {
-                        "operation": mutation_state.get("operation", "insert"),
-                        "table": mutation_state.get("table", ""),
-                        "required_fields": required_fields,
-                        "collected_fields": collected_fields,
-                    },
-                },
-            )
+            message, payload = self._build_confirmation_prompt(mutation_state)
+            return self._build_final_response(request.session_id, message, workflow_payload=payload)
 
-        await self._clear_mutation_state(request.session_id)
-        if request.metadata is None:
-            request.metadata = {}
+        if awaiting == "confirmation":
+            if lower_text in {"yes", "y", "confirm", "confirmed", "proceed"}:
+                await self._clear_mutation_state(request.session_id)
+                if request.metadata is None:
+                    request.metadata = {}
+                request.metadata["mutation_context"] = {
+                    "operation": mutation_state.get("operation", "insert"),
+                    "table": mutation_state.get("table", ""),
+                    "fields": collected_fields,
+                }
+                return None
 
-        request.metadata["mutation_context"] = {
-            "operation": mutation_state.get("operation", "insert"),
-            "table": mutation_state.get("table", ""),
-            "fields": collected_fields,
-        }
-        return None
+            if lower_text in {"no", "n", "edit", "change"}:
+                mutation_state["awaiting"] = "field_selection"
+                mutation_state["pending_field"] = self._next_missing_field(required_fields, {})
+                mutation_state["page"] = 0
+                mutation_state["page_size"] = page_size
+                await self._save_mutation_state(request.session_id, mutation_state)
+                message, payload = self._build_field_menu(mutation_state)
+                return self._build_final_response(request.session_id, message, workflow_payload=payload)
+
+            message, payload = self._build_confirmation_prompt(mutation_state)
+            return self._build_final_response(request.session_id, message, workflow_payload=payload)
+
+        mutation_state["awaiting"] = "field_selection"
+        await self._save_mutation_state(request.session_id, mutation_state)
+        message, payload = self._build_field_menu(mutation_state)
+        return self._build_final_response(request.session_id, message, workflow_payload=payload)
 
     async def start_session(self):
         return {"session_id": str(uuid.uuid4()), "message": "Session started"}
@@ -313,30 +571,14 @@ class ChatService:
                         "collected_fields": mutation_fields,
                         "pending_field": target_column,
                         "field_descriptions": {},
+                        "awaiting": "field_value",
+                        "page": 0,
+                        "page_size": 5,
                     }
                     await self._save_mutation_state(request.session_id, recovery_state)
-                    workflow_payload = {
-                        "workflow_id": "mutation_menu",
-                        "state": recovery_state["state"],
-                        "completed": False,
-                        "next_field": target_column,
-                        "collected_data": {
-                            "operation": recovery_state["operation"],
-                            "table": recovery_state["table"],
-                            "required_fields": recovery_state["required_fields"],
-                            "collected_fields": recovery_state["collected_fields"],
-                        },
-                    }
-                    if invalid_column:
-                        final_message = (
-                            f"I could not save because `{target_column}` had an invalid value. "
-                            f"Please provide a valid `{target_column}`."
-                        )
-                    else:
-                        final_message = (
-                            f"The database requires `{target_column}` for this record. "
-                            f"Please provide `{target_column}`."
-                        )
+                    message, payload = self._build_value_prompt(recovery_state, target_column)
+                    workflow_payload = payload
+                    final_message = message
                     error = None
                     executed_sql = ""
 
@@ -363,11 +605,13 @@ class ChatService:
                     "collected_fields": collected_fields,
                     "pending_field": next_field,
                     "field_descriptions": field_descriptions,
+                    "awaiting": "field_selection",
+                    "page": 0,
+                    "page_size": 5,
                 }
                 await self._save_mutation_state(request.session_id, state)
 
-                if next_field:
-                    final_message = self._format_field_prompt(state)
+                final_message, workflow_payload = self._build_field_menu(state)
 
             yield json.dumps({"type": "token", "content": str(final_message)}) + "\n"
 
