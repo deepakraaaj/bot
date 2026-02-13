@@ -14,6 +14,24 @@ class SQLBuilderNode:
         query = str(messages[-1].content) if messages else ""
         metadata = state.get("metadata", {})
         company_id = metadata.get("company_id")
+        mutation_context = metadata.get("mutation_context") or {}
+
+        if mutation_context:
+            forced_operation = str(mutation_context.get("operation", "")).strip().lower()
+            forced_table = str(mutation_context.get("table", "")).strip()
+            forced_fields = dict(mutation_context.get("fields") or {})
+
+            if forced_operation == "insert" and forced_table:
+                sql, err = self.builder.build_insert(forced_table, forced_fields, company_id)
+                if err:
+                    return {"sql_query": "SKIP", "messages": [AIMessage(content=err)]}
+                return {"sql_query": sql}
+
+            if forced_operation == "update" and forced_table:
+                sql, err = self.builder.build_update(forced_table, forced_fields, company_id)
+                if err:
+                    return {"sql_query": "SKIP", "messages": [AIMessage(content=err)]}
+                return {"sql_query": sql}
 
         intent = dict(state.get("intent") or {})
         operation = str(intent.get("operation", "select") or "select").lower()
@@ -21,10 +39,10 @@ class SQLBuilderNode:
         if not table:
             return {
                 "sql_query": "SKIP",
-                "messages": [AIMessage(content="Please mention a table/entity like task, asset, user, or facility.")],
+                "messages": [AIMessage(content="Please mention a table/entity like task, schedule, asset, user, or facility.")],
             }
 
-        fields = {}
+        fields: Dict[str, str] = {}
         if isinstance(intent.get("fields"), dict):
             fields.update(intent.get("fields"))
         fields.update(self.builder.parse_kv_pairs(query))
@@ -34,10 +52,16 @@ class SQLBuilderNode:
             if required:
                 missing = [f for f in required if f not in fields]
                 if missing:
+                    next_field = missing[0]
                     return {
                         "sql_query": "SKIP",
-                        "messages": [AIMessage(content=f"Missing required fields for insert: {', '.join(missing)}")],
-                        "workflow_payload": self.builder.mutation_form_payload(table, "insert", required),
+                        "messages": [AIMessage(content=f"Let's do this step by step. Please provide `{next_field}`.")],
+                        "workflow_payload": self.builder.mutation_form_payload(
+                            table,
+                            "insert",
+                            required,
+                            collected_fields=fields,
+                        ),
                     }
             sql, err = self.builder.build_insert(table, fields, company_id)
             if err:

@@ -22,6 +22,8 @@ class ChatNode:
         "users",
         "company",
         "checklist",
+        "schedule",
+        "schedules",
         "scheduler",
         "sql",
         "database",

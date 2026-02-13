@@ -139,22 +139,36 @@ User query: {query}
         tenant = f" WHERE company_id = {self._safe_value(company_id)}" if where_hint else ""
         return f"SELECT * FROM {table}{tenant} LIMIT 100;"
 
-    def mutation_form_payload(self, table: str, operation: str, required_fields):
+    def mutation_form_payload(self, table: str, operation: str, required_fields, collected_fields=None):
         fields = [str(x) for x in required_fields]
+        collected = dict(collected_fields or {})
+        missing = [f for f in fields if not str(collected.get(f, "")).strip()]
+        next_field = missing[0] if missing else ""
+        descriptions = self.catalog.important_column_descriptions(table)
         return {
             "workflow_id": "mutation_menu",
             "state": f"collect_{operation}_{table}",
-            "completed": False,
+            "completed": len(missing) == 0,
+            "next_field": next_field,
             "collected_data": {
                 "operation": operation,
                 "table": table,
                 "required_fields": fields,
+                "collected_fields": collected,
             },
             "ui": {
-                "type": "form",
+                "type": "conversational_form",
                 "state": f"collect_{operation}_{table}",
                 "title": f"{operation.title()} {table}",
-                "description": "Provide values as key=value pairs separated by commas.",
-                "fields": [{"id": f, "label": f, "type": "text"} for f in fields],
+                "description": "Provide one value at a time. You can also send key=value pairs.",
+                "fields": [
+                    {
+                        "id": f,
+                        "label": f,
+                        "type": "text",
+                        "description": descriptions.get(f, ""),
+                    }
+                    for f in fields
+                ],
             },
         }

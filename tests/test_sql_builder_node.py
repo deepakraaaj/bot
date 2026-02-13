@@ -34,7 +34,7 @@ class FakeBuilder:
     async def build_select(self, query: str, table: str, company_id):
         return self._select_sql
 
-    def mutation_form_payload(self, table: str, operation: str, required_fields):
+    def mutation_form_payload(self, table: str, operation: str, required_fields, collected_fields=None):
         return {"operation": operation, "table": table, "required_fields": required_fields}
 
 
@@ -63,7 +63,7 @@ def test_sql_builder_node_insert_requires_fields_and_returns_workflow_payload():
     result = asyncio.run(node.run(_base_state("create task", {"operation": "insert", "fields": {}})))
 
     assert result["sql_query"] == "SKIP"
-    assert "missing required fields" in result["messages"][0].content.lower()
+    assert "step by step" in result["messages"][0].content.lower()
     assert result["workflow_payload"]["operation"] == "insert"
 
 

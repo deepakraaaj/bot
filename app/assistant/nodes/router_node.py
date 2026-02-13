@@ -8,6 +8,10 @@ class RouterNode:
         self.router = RouterService()
 
     async def run(self, state: Dict) -> Dict:
+        metadata = state.get("metadata", {}) or {}
+        if metadata.get("mutation_context"):
+            return {"route": "SQL"}
+
         messages = state.get("messages", [])
         query = messages[-1].content if messages else ""
         return {"route": await self.router.route(str(query))}

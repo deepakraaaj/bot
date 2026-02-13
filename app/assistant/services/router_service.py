@@ -24,7 +24,7 @@ class RouterService:
     def fallback(query: str) -> str:
         q = (query or "").strip().lower()
         if re.search(
-            r"\b(task|tasks|asset|assets|user|users|facility|facilities|company|companies|checklist|scheduler|log|logs|select|insert|update|create|add|edit|modify|show|list|count|get|find|how many)\b",
+            r"\b(task|tasks|asset|assets|user|users|facility|facilities|company|companies|checklist|schedule|schedules|scheduler|log|logs|select|insert|update|create|add|edit|modify|show|list|count|get|find|how many)\b",
             q,
         ):
             return "SQL"

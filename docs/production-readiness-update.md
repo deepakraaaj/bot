@@ -84,6 +84,33 @@ The project now has automated quality gates for:
 - test execution with enforced minimum coverage
 - container startup smoke verification
 
+## Conversational Workflow Upgrade (Enterprise Mutation Flow)
+
+### What was implemented
+- Session-persistent mutation state in cache, with one-by-one slot filling.
+- Deterministic conversational prompts for required insert fields.
+- Command-safety guard while collecting fields (prevents accidentally treating a new command as field value).
+- Forced SQL routing when a guided mutation is in progress.
+- Schema-aware alias improvements (`schedule`, `schedules`, `scheduler`) for better entity resolution.
+- DB error recovery:
+  - invalid value for a specific column -> asks only for corrected value
+  - missing required DB column (no default) -> asks for the missing field and continues
+
+### Outcome verified
+- `create schedule` now starts guided collection instead of failing with “mention table/entity”.
+- Assistant asks next missing field one-by-one and keeps workflow state across turns.
+- When invalid values or DB-required fields are detected, the assistant remains in workflow and asks for correction instead of ending in generic failure.
+
+### Relevant files
+- `app/services/chat_service.py`
+- `app/assistant/nodes/router_node.py`
+- `app/assistant/nodes/sql_builder_node.py`
+- `app/assistant/services/sql_builder_service.py`
+- `app/assistant/services/manifest_catalog.py`
+- `tests/test_chat_service_mutation_flow.py`
+- `tests/test_manifest_catalog.py`
+- `tests/test_router_node.py`
+
 ## Next Recommended Improvements
 1. Increase coverage gate gradually (e.g., 45 -> 55 -> 65) as tests are expanded.
 2. Expand mypy scope module-by-module until full `app/` is enforced.
@@ -128,4 +155,3 @@ production-readiness-update.md
 Note:
 
 This directory is not a git repo in your current environment, so I could not commit/push from here directly.
-
