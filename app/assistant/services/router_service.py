@@ -23,13 +23,18 @@ class RouterService:
     @staticmethod
     def fallback(query: str) -> str:
         q = (query or "").strip().lower()
-        if re.search(r"\b(task|asset|user|facility|select|insert|update|create|add|edit|modify|show|list|count|get|find)\b", q):
+        if re.search(
+            r"\b(task|tasks|asset|assets|user|users|facility|facilities|company|companies|checklist|scheduler|log|logs|select|insert|update|create|add|edit|modify|show|list|count|get|find|how many)\b",
+            q,
+        ):
             return "SQL"
         return "CHAT"
 
     async def route(self, query: str) -> str:
         prompt = f"""
 Classify user message as SQL or CHAT.
+Use SQL for requests asking to count/list/show/find/get records from project entities
+like tasks, assets, facilities, users, companies, checklists, schedules, or logs.
 Return only JSON: {{"route":"SQL|CHAT"}}
 User: {query}
 """

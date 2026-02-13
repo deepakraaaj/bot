@@ -1,6 +1,6 @@
 import os
 import sys
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 
 # Use the environment variable
 db_url = os.getenv("DATABASE_URL")
@@ -19,16 +19,18 @@ try:
     with engine.connect() as conn:
         print("🔍 Inspecting 'ai_schema_note' table...")
         try:
-            # Check columns first
-            insp = create_engine(db_url)
+            # Check columns first.
             inspector = inspect(conn)
-            columns = inspector.get_columns('ai_schema_note')
+            columns = inspector.get_columns("ai_schema_note")
             for col in columns:
                 print(f"Column: {col['name']} ({col['type']})")
-            else:
-                print(f"✅ Found {len(rows)} sample rows:")
-                for row in rows:
-                    print(row)
+
+            # Then fetch sample rows.
+            result = conn.execute(text("SELECT * FROM ai_schema_note LIMIT 5"))
+            rows = result.fetchall()
+            print(f"✅ Found {len(rows)} sample rows:")
+            for row in rows:
+                print(row)
         except Exception as e:
             print(f"❌ Failed to query ai_schema_note: {e}")
 

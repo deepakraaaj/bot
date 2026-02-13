@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from functools import lru_cache
 from typing import Optional
 import os
@@ -27,9 +27,10 @@ class Settings(BaseSettings):
     # Redis
     REDIS_URL: str = "redis://localhost:6379"
 
-    class Config:
-        env_file = os.path.join(os.path.dirname(__file__), "../.env")
-        extra = "ignore"
+    model_config = SettingsConfigDict(
+        env_file=os.path.join(os.path.dirname(__file__), "../.env"),
+        extra="ignore",
+    )
 
 @lru_cache()
 def get_settings():
