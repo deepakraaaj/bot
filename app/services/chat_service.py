@@ -242,9 +242,11 @@ class ChatService:
         if not text:
             return None
 
-        if text in {f.lower() for f in remaining}:
+        normalized_text = text.split(" - ", 1)[0].strip()
+
+        if normalized_text in {f.lower() for f in remaining}:
             for field in remaining:
-                if field.lower() == text:
+                if field.lower() == normalized_text:
                     return field
             return None
 
@@ -258,6 +260,42 @@ class ChatService:
             if 1 <= index <= len(page_fields):
                 return page_fields[index - 1]
         return None
+
+    @staticmethod
+    def _normalize_option_value(pending_field: str, text: str) -> str:
+        options = ChatService._suggested_options(pending_field)
+        cleaned = (text or "").strip()
+        if not options or not cleaned:
+            return cleaned
+
+        if cleaned.isdigit():
+            index = int(cleaned)
+            if 1 <= index <= len(options):
+                return str(options[index - 1]["value"])
+            return cleaned
+
+        # Support inputs like "Weekly (2)" or "weekly".
+        lower = cleaned.lower()
+        for opt in options:
+            label = str(opt.get("label", "")).strip().lower()
+            value = str(opt.get("value", "")).strip()
+            if lower == label or lower == f"{label} ({value})":
+                return value
+        return cleaned
+
+    @staticmethod
+    def _is_valid_field_value(field_name: str, value: str) -> bool:
+        kind = ChatService._input_kind(field_name)
+        text = (value or "").strip()
+        if not text:
+            return False
+        if kind == "date":
+            return bool(re.fullmatch(r"\d{4}-\d{2}-\d{2}", text))
+        if kind == "numeric":
+            return bool(re.fullmatch(r"-?\d+(\.\d+)?", text))
+        if kind == "boolean":
+            return text in {"0", "1", "true", "false", "yes", "no"}
+        return True
 
     @staticmethod
     def _is_command_like_input(text: str) -> bool:
@@ -277,14 +315,10 @@ class ChatService:
         if text and pending_field:
             if ChatService._is_command_like_input(text):
                 return {}
-
-            options = ChatService._suggested_options(pending_field)
-            if options and text.isdigit():
-                index = int(text)
-                if 1 <= index <= len(options):
-                    return {pending_field: str(options[index - 1]["value"])}
-
-            return {pending_field: text}
+            normalized = ChatService._normalize_option_value(pending_field, text)
+            if ChatService._is_valid_field_value(pending_field, normalized):
+                return {pending_field: normalized}
+            return {}
         return {}
 
     @staticmethod
